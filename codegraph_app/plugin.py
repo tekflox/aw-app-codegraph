@@ -213,22 +213,31 @@ class CodeGraphAppPlugin:
         which has no ``src/`` tree.
         """
         path = os.path.join(self.ctx.package_dir, ".data", f".{name}.lock")
+        # Decide the verdict BEFORE yielding, then yield exactly once. An
+        # earlier version wrapped the yield in the same `try` as the lock
+        # acquisition, which meant an exception from the `with` BODY — thrown
+        # back in at the yield by contextlib — landed in that handler and
+        # yielded a second time, so the caller got `RuntimeError: generator
+        # didn't stop after throw()` INSTEAD of the real error. ENOSPC part
+        # way through a 260 MB index write is the live version of that, and
+        # it would have reported the wrong cause entirely.
         fd = None
+        #: No lock mechanism available at all -> proceed rather than silently
+        #: never indexing; CodeGraph's own writer lock still serializes the
+        #: actual writes underneath us.
+        held = True
         try:
             os.makedirs(os.path.dirname(path), exist_ok=True)
             fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o644)
+        except OSError as exc:
+            log.warning("codegraph: no cross-worker lock for %s (%s)", name, exc)
+        else:
             try:
                 fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except OSError:
-                yield False
-                return
-            yield True
-        except OSError as exc:
-            # No lock mechanism available (read-only .data). Proceed rather
-            # than silently never indexing — CodeGraph's own writer lock still
-            # serializes the actual writes underneath.
-            log.warning("codegraph: no cross-worker lock for %s (%s)", name, exc)
-            yield True
+                held = False
+        try:
+            yield held
         finally:
             if fd is not None:
                 os.close(fd)

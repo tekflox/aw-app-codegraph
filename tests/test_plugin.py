@@ -8,6 +8,7 @@ the plugin builds, not CodeGraph's own behaviour.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 import sys
@@ -540,3 +541,50 @@ def test_an_unwritable_index_root_records_the_failure_rather_than_raising(
         assert plugin.last_index["ok"] is False
     finally:
         root.chmod(0o700)
+
+
+def test_an_error_from_the_guarded_body_reaches_the_caller_unchanged(
+        make_ctx, tmp_path):
+    """The verdict and the yield used to share one `try`, so an exception from
+    the `with` BODY — thrown back in at the yield by contextlib — landed in
+    the lock's own except handler and yielded a second time. The caller then
+    got `RuntimeError: generator didn't stop after throw()` instead of the
+    real failure. ENOSPC part way through a 260 MB index write is the live
+    version of that, and it would have named the wrong cause entirely."""
+    plugin = asyncio.run(activate(make_ctx({"index_root": str(tmp_path)})))
+
+    with pytest.raises(OSError, match="simulated ENOSPC"):
+        with plugin._single_worker("initial-index") as mine:
+            assert mine is True
+            raise OSError(28, "simulated ENOSPC")
+
+
+def test_a_failing_index_reports_the_real_error_not_a_generator_error(
+        make_ctx, tmp_path, monkeypatch):
+    """The same bug seen through the path that actually matters: whatever
+    `codegraph init` failed with has to be what lands in last_index."""
+    async def exploding_spawn(self, argv):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(CodeGraphAppPlugin, "_spawn", exploding_spawn)
+    plugin = CodeGraphAppPlugin()
+
+    asyncio.run(_activate_and_index(plugin, make_ctx({"index_root": str(tmp_path)})))
+
+    assert plugin.last_index["ok"] is False
+    assert "No space left on device" in plugin.last_index["detail"]
+    assert "generator didn't stop" not in plugin.last_index["detail"]
+
+
+def test_the_lock_fd_is_closed_even_when_the_body_raises(make_ctx, tmp_path):
+    """A leaked fd would hold the flock for the life of the process, so the
+    next boot's index would defer forever to a worker that already failed."""
+    plugin = asyncio.run(activate(make_ctx({"index_root": str(tmp_path)})))
+
+    with contextlib.suppress(OSError):
+        with plugin._single_worker("initial-index"):
+            raise OSError("boom")
+
+    # The lock is free again: a fresh acquisition in the same process wins.
+    with plugin._single_worker("initial-index") as mine:
+        assert mine is True
