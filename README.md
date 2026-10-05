@@ -40,6 +40,23 @@ stdio-only. So this app runs the child and exposes it over HTTP — the same
 shape `aw-app-notion` uses for `aw-kanban`. `codegraph_app/mcp/bridge.py`'s
 docstring has the full argument.
 
+**3a. Lazy spawn narrows the per-worker fan-out but does NOT bound it — open.**
+Measured on v0.4.0 after real gateway traffic: **4 of 10 workers** had each
+spawned their own child, 10 processes, **1.27 GB** RSS and climbing. The
+gateway opens new connections (a reload re-dials, and each agent session is
+its own caller), so requests land on different workers over time and each one
+lazily spawns once. The bound is `1 CodeGraph daemon (~580 MB, elected
+globally) + N_workers x ~130 MB` ≈ **1.9 GB**, plus one file watcher per
+child over the same 80-repo tree — an `fs.inotify.max_user_watches` risk
+nobody has measured.
+
+Bounding it properly is an open design question, not a tweak, because every
+option trades something away: an idle-reap gives up the always-live watcher
+that justified this migration; a single-owner child with cross-worker
+forwarding keeps the watcher but adds a loopback hop and an election; and
+dropping the persistent child for a CLI call per tool gives up the watcher
+entirely. That decision belongs to the Architect — see the Kanban card.
+
 **3. Every core worker runs this plugin.** `AW_WORKSPACE_WORKERS>1` means
 `activate()` runs N times, so anything it starts is started N times. The MCP
 child is therefore spawned lazily by the first request that needs it, and the
