@@ -3,7 +3,7 @@
   "id": "codegraph",
   "name": "Code Graph",
   "version": "0.2.0",
-  "description": "Ask about this workspace's code and get the real answer, not a guess. Code Graph indexes every repo here into one searchable graph of symbols, call paths and files, then hands any agent on this tenant a `codegraph_explore` tool that returns the verbatim source of the symbols that matter plus who calls them \u2014 one call instead of a dozen greps. The index follows your edits as you make them, so the answer is never stale.",
+  "description": "Ask about this workspace's code and get the real answer, not a guess. Code Graph indexes every repo here into one searchable graph of symbols, call paths and files, then hands any agent on this tenant a `codegraph_explore` tool that returns the verbatim source of the symbols that matter plus who calls them — one call instead of a dozen greps. The index follows your edits as you make them, so the answer is never stale.",
   "tier": "inprocess",
   "category": "dev-tools",
   "publisher": "TekFlox",
@@ -11,7 +11,7 @@
   "resource_estimate": {
     "cpu": "low",
     "memory": "~600 MB",
-    "disk": "~350 MB"
+    "disk": "~550 MB"
   },
   "runtime": {
     "python": ">=3.11",
@@ -91,7 +91,7 @@
         "default": [
           "repos/"
         ],
-        "description": "Gitignore-style patterns naming gitignored directories whose embedded git repos get indexed anyway, written to codegraph.json at index_root. The workspace's own .gitignore excludes /repos/, so without this the ~50 nested repos there are invisible to the index."
+        "description": "Gitignore-style patterns naming gitignored directories whose embedded git repos get indexed anyway, written to codegraph.json at index_root. The workspace's own .gitignore excludes /repos/, so without this the nested repos there are invisible to the index — 80 of them on this workspace, measured 2026-10-05."
       },
       "native_watch": {
         "type": "boolean",
@@ -101,7 +101,7 @@
       "reconcile_interval_s": {
         "type": "number",
         "default": 900,
-        "description": "How often (seconds) to run a low-priority `codegraph sync`. Only used when native_watch is off \u2014 with the watcher on, no polling tick is registered at all."
+        "description": "How often (seconds) to run a low-priority `codegraph sync`. Only used when native_watch is off — with the watcher on, no polling tick is registered at all."
       },
       "mcp_tools": {
         "type": "array",

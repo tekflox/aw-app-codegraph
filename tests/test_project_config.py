@@ -1,4 +1,4 @@
-"""codegraph_app/project_config.py — the file that decides whether the ~50
+"""codegraph_app/project_config.py — the file that decides whether the 80
 nested repos under repos/ are in the index at all."""
 from __future__ import annotations
 

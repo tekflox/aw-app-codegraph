@@ -4,13 +4,16 @@ config file.
 Why this file has to exist at all: CodeGraph respects the indexed tree's
 ``.gitignore``, and this workspace's root ``.gitignore`` excludes ``/repos/``
 (see that file's own comment — ``repos/`` is runtime state that happens to
-live inside the repo's working tree). Without an opt-in, the ~50 nested git
+live inside the repo's working tree). Without an opt-in, the nested git
 repos under ``repos/`` are never discovered and the index covers only the
-workspace core. ``includeIgnored`` is CodeGraph's answer to exactly that
-shape (upstream #622/#699/#1156): gitignore-style patterns naming gitignored
-directories whose embedded git repos get indexed anyway. Each nested repo's
-OWN ``.gitignore`` is still honored, so this widens discovery without
-dragging in anyone's ``node_modules``.
+workspace core — 80 nested repos and 3,698 indexed files with the opt-in,
+versus a few hundred files without it (measured 2026-10-05).
+
+``includeIgnored`` is CodeGraph's answer to exactly that shape (upstream
+#622/#699/#1156): gitignore-style patterns naming gitignored directories
+whose embedded git repos get indexed anyway. Each nested repo's OWN
+``.gitignore`` is still honored, so this widens discovery without dragging
+in anyone's ``node_modules``.
 
 The filename and location are not configurable — ``PROJECT_CONFIG_FILENAME``
 is hardcoded to ``codegraph.json`` and resolved relative to the project root

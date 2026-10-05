@@ -461,3 +461,13 @@ async def test_a_child_that_dies_before_the_first_write_lands_reports_the_same_w
     with pytest.raises(RuntimeError, match="without completing its MCP handshake"):
         await br._handshake()
     assert not br.running
+
+
+@pytest.mark.asyncio
+async def test_a_child_that_greets_then_dies_before_tools_list_also_reports_cleanly():
+    """The third way into the same failure: the handshake gets past
+    initialize and the child falls over before listing its tools."""
+    br = make_bridge(FAKE_DIE_AFTER_INIT="1")
+    with pytest.raises(RuntimeError, match="without completing its MCP handshake"):
+        await br.start()
+    assert not br.running

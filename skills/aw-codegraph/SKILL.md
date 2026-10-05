@@ -82,10 +82,11 @@ the same time is the designed-for case. So `codegraph status` is safe to run
 against a live server, and nothing has to be paused to reindex.
 
 If the watcher ever misbehaves (CPU, or the host's
-`fs.inotify.max_user_watches` ceiling across ~50 repos), set `native_watch:
-false` in the app's config: the server is then started `--no-watch` and a
-niced `codegraph sync` watchdog tick takes over at `reconcile_interval_s`
-(default 900s). Measure before switching — it trades real-time for calm.
+`fs.inotify.max_user_watches` ceiling across the 80 nested repos here), set
+`native_watch: false` in the app's config: the server is then started
+`--no-watch` and a niced `codegraph sync` watchdog tick takes over at
+`reconcile_interval_s` (default 900s). Measure before switching — it trades
+real-time for calm.
 
 ## How the tools actually reach an agent
 

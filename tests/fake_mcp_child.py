@@ -16,6 +16,8 @@ Behaviour is driven by env vars so one script covers every case:
 * ``FAKE_IGNORE_SIGTERM=1`` — refuse SIGTERM, so stop() has to escalate.
 * ``FAKE_FAT_LINE=1``   — answer ``tools/call`` with a payload far past the
   reader's buffer limit.
+* ``FAKE_DIE_AFTER_INIT=1`` — answer ``initialize``, then exit before
+  ``tools/list`` — a child that starts, greets, and then falls over.
 
 ``tools/call`` on ``die`` exits the process without answering — the
 mid-session crash the bridge has to recover from transparently.
@@ -72,6 +74,8 @@ def main() -> None:
                 "protocolVersion": "2024-11-05", "capabilities": {"tools": {}},
                 "serverInfo": {"name": "codegraph", "version": "1.6.2"}}})
         elif method.startswith("notifications/"):
+            if os.environ.get("FAKE_DIE_AFTER_INIT"):
+                sys.exit(3)
             continue
         elif method == "tools/list":
             if os.environ.get("FAKE_TOOLS_ERROR"):
