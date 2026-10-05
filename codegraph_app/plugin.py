@@ -29,10 +29,10 @@ What activate() wires up, and why each piece is shaped the way it is:
   ``_visualizer_paused``-style lock here would be cargo cult.
 
   ``native_watch: false`` is the escape hatch if the watcher ever costs too
-  much (CPU, or the host's ``fs.inotify.max_user_watches`` ceiling across ~50
-  repos): the child is then started with ``--no-watch`` and a low-priority
-  ``codegraph sync`` watchdog tick takes over — cgc's old model, available but
-  not the default.
+  much (CPU, or the host's ``fs.inotify.max_user_watches`` ceiling across the
+  80 nested repos here): the child is then started with ``--no-watch`` and a
+  low-priority ``codegraph sync`` watchdog tick takes over — cgc's old model,
+  available but not the default.
 """
 from __future__ import annotations
 

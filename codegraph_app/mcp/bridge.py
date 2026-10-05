@@ -57,11 +57,13 @@ PROTOCOL_VERSION = "2024-11-05"
 #: gateway's own 30s.
 HANDSHAKE_TIMEOUT_S = 120.0
 
-#: ``tools/call`` budget. ``codegraph_explore`` over a ~50-repo index does
-#: real work (FTS5 query, call-path expansion, re-reading the matched files
-#: from disk), and the gateway's own HttpUpstream allows read=600s, so a
-#: shorter budget here would just move the timeout to the wrong side of the
-#: hop. ``tools/list`` is answered from memory and gets the handshake budget.
+#: ``tools/call`` budget. ``codegraph_explore`` over this workspace's index
+#: (measured 2026-10-05: 3,698 files, 75k nodes, 186k edges, a 263 MB DB
+#: across 80 nested repos) does real work — FTS5 query, call-path expansion,
+#: re-reading the matched files from disk — and the gateway's own HttpUpstream
+#: allows read=600s, so a shorter budget here would only move the timeout to
+#: the wrong side of the hop. ``tools/list`` is answered from memory and gets
+#: the handshake budget instead.
 CALL_TIMEOUT_S = 300.0
 
 #: StreamReader buffer for the child's stdout. asyncio's default is 64KB and a
@@ -84,6 +86,12 @@ def _result(req_id, payload: dict) -> dict:
 
 def _error(req_id, code: int, message: str) -> dict:
     return {"jsonrpc": "2.0", "id": req_id, "error": {"code": code, "message": message}}
+
+
+class _ChildGone(Exception):
+    """Internal: the child exited mid-handshake. Normalises the three ways
+    that surfaces (EOF on read, ConnectionResetError or BrokenPipeError on
+    write) into one branch — see ``_handshake``."""
 
 
 def _tool_error(req_id, text: str) -> dict:
@@ -174,21 +182,32 @@ class CodeGraphBridge:
             hello = await asyncio.wait_for(self._read_direct(),
                                            timeout=HANDSHAKE_TIMEOUT_S)
             if hello is None:
-                # EOF instead of a reply: the child exited on startup (a
-                # broken bundle, a missing index dir, a bad flag). Say that,
-                # rather than falling through and failing on a closed stdin
-                # with a BrokenPipeError that names nothing.
-                await self.stop()
-                raise RuntimeError(
-                    "the codegraph MCP child exited without answering initialize")
+                raise _ChildGone()
             await self._write({"jsonrpc": "2.0", "method": "notifications/initialized"})
             await self._write({"jsonrpc": "2.0", "id": "tools", "method": "tools/list"})
             listed = await asyncio.wait_for(self._read_direct(), timeout=HANDSHAKE_TIMEOUT_S)
+            if listed is None:
+                raise _ChildGone()
         except asyncio.TimeoutError:
             await self.stop()
             raise RuntimeError(
                 f"the codegraph MCP child did not answer its handshake within "
                 f"{HANDSHAKE_TIMEOUT_S}s") from None
+        except (_ChildGone, ConnectionResetError, BrokenPipeError):
+            # The child exited during its own handshake — a broken bundle, a
+            # bad flag, an index dir it cannot open. Which of the three ways
+            # that surfaces is a RACE: if the child is already gone when we
+            # write, asyncio's drain() raises ConnectionResetError/
+            # BrokenPipeError; if the write lands first, we instead read EOF.
+            # Found by the test suite, where adding coverage instrumentation
+            # was enough to flip which branch won. Both mean the same thing
+            # and must report the same way, because the raw asyncio errors
+            # ("Connection lost") name neither the child nor the cause.
+            await self.stop()
+            raise RuntimeError(
+                "the codegraph MCP child exited without completing its MCP "
+                "handshake — check `aw-workspace-cli doctor` and "
+                "`codegraph status`") from None
         if listed and "error" in listed:
             # A tools/list that ERRORED is not the same thing as a child with
             # no tools — swallowing it would start the bridge "successfully"

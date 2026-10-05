@@ -443,6 +443,21 @@ async def test_a_child_that_exits_on_startup_fails_the_start_with_a_clear_reason
     dies before saying hello. Without this the next write hits a closed
     stdin and reports a BrokenPipeError that names nothing."""
     br = CodeGraphBridge(command=sys.executable, args=["-c", "pass"], env={})
-    with pytest.raises(RuntimeError, match="exited without answering initialize"):
+    with pytest.raises(RuntimeError, match="without completing its MCP handshake"):
         await br.start()
+    assert not br.running
+
+
+@pytest.mark.asyncio
+async def test_a_child_that_dies_before_the_first_write_lands_reports_the_same_way():
+    """The same failure, reached the other way round: if the child is already
+    gone when we write, asyncio raises ConnectionResetError from drain()
+    instead of us reading EOF. Which branch wins is a race — adding coverage
+    instrumentation was enough to flip it — so both must report identically."""
+    br = CodeGraphBridge(command=sys.executable, args=["-c", "pass"], env={})
+    await br._spawn()
+    await br.proc.wait()  # guarantee the child is gone before any write
+
+    with pytest.raises(RuntimeError, match="without completing its MCP handshake"):
+        await br._handshake()
     assert not br.running
