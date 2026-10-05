@@ -40,7 +40,17 @@ stdio-only. So this app runs the child and exposes it over HTTP — the same
 shape `aw-app-notion` uses for `aw-kanban`. `codegraph_app/mcp/bridge.py`'s
 docstring has the full argument.
 
-**3. No write-lock choreography.** `cgc` needed `_visualizer_paused` and a
+**3. Every core worker runs this plugin.** `AW_WORKSPACE_WORKERS>1` means
+`activate()` runs N times, so anything it starts is started N times. The MCP
+child is therefore spawned lazily by the first request that needs it, and the
+initial index is guarded by an `flock` (`_single_worker`) rather than a marker
+file — core made the same trade for the same reason, see `Lock D` in
+`src/api/app.py`. The `native_watch=false` watchdog tick needs **no** guard:
+`ctx.watchdog` is already single-owner via core's watchdog leader flock
+(`src/apps/watchdog.py`, "W1: leader mode"), and double-gating it would hide a
+regression in core's gate.
+
+**4. No write-lock choreography.** `cgc` needed `_visualizer_paused` and a
 write lock because KuzuDB is single-writer. CodeGraph is SQLite in WAL mode.
 Porting that machinery here would be cargo cult; `codegraph status` runs
 safely against a live server.

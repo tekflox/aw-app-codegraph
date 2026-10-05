@@ -118,6 +118,15 @@ The child **must** run in the workspace container, not the gateway's:
 * `codegraph serve` is stdio-only; there is no HTTP transport to point the
   gateway at directly.
 
+The child is spawned **lazily, by the first MCP request that needs it** —
+not at activate(). Every core worker activates this plugin, so an eager start
+meant one `codegraph serve --mcp` per worker: measured on the first real
+install, 12 children, 2.26 GB RSS and 12 independent file watchers over the
+same 80-repo tree. So `mcp_running: false` / "0 tools" right after a restart
+is normal, and the first tool call fixes it. CodeGraph's own daemon election
+kept the *writes* correct throughout ("Another daemon already holds the lock;
+exiting"), so that was waste rather than corruption.
+
 Hence the bridge (`codegraph_app/mcp/bridge.py`). Two things it guarantees:
 
 * **A dead child is replaced transparently.** The caller that hit it gets an

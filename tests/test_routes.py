@@ -195,3 +195,25 @@ def test_status_is_json_serialisable_end_to_end():
     client, _ = make_client()
 
     json.dumps(client.get("/status").json())
+
+
+# ── lazy child spawn ─────────────────────────────────────────────────
+#
+# The "initialize does not spawn, tools/list does" half of this lives in
+# test_bridge.py, where a single event loop owns the real child — a
+# TestClient runs its own portal loop and a child created under it cannot be
+# torn down from an asyncio.run() afterwards.
+
+def test_status_says_the_child_is_not_running_before_any_request():
+    """`mcp_running: false` with a healthy index is the normal state right
+    after a boot — not a fault. The window copy has to say so."""
+    client, plugin = make_client()
+    plugin.bridge = type("B", (), {"snapshot": staticmethod(lambda: {
+        "running": False, "pid": None, "spawn_count": 0, "tool_count": 0,
+        "tools": [], "last_error": ""})})()
+
+    body = client.get("/status").json()
+
+    assert body["mcp_running"] is False
+    assert body["mcp_tool_count"] == 0
+    assert body["logged_in"] is True  # the index is still fine

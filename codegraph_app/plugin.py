@@ -37,6 +37,8 @@ What activate() wires up, and why each piece is shaped the way it is:
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import fcntl
 import json
 import logging
 import os
@@ -186,6 +188,51 @@ class CodeGraphAppPlugin:
 
     # ── indexing ──────────────────────────────────────────────────────
 
+    @contextlib.contextmanager
+    def _single_worker(self, name: str):
+        """Yield True to exactly one worker, False to every rival.
+
+        A ``flock``, not a marker file, and that is core's own documented
+        trade rather than a preference of this app's: see ``Lock D`` in
+        ``src/api/app.py`` — "a flock cannot be unreachable — EAGAIN is itself
+        the fact that another worker holds it — so the state is binary and the
+        whole degrade-open branch is gone." An ``O_EXCL`` marker (tried here
+        first) has the same defect in a different coat: it cannot tell "a
+        worker is indexing right now" from "a worker died mid-index", so it
+        needs an age heuristic, and getting that heuristic wrong leaves the
+        workspace permanently un-indexed with nothing reporting it.
+
+        The kernel releases an ``flock`` when the holder exits, so a worker
+        killed mid-index simply loses it and the next boot retries. Nothing
+        persistent is needed to stop a re-index on later boots either — once
+        ``init`` finishes, ``.codegraph/`` exists and the caller's own
+        directory check short-circuits before this is ever reached.
+
+        ``fcntl`` is stdlib on purpose: importing the host's
+        ``src.apps.fs_lock`` would break this app's standalone CI checkout,
+        which has no ``src/`` tree.
+        """
+        path = os.path.join(self.ctx.package_dir, ".data", f".{name}.lock")
+        fd = None
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o644)
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError:
+                yield False
+                return
+            yield True
+        except OSError as exc:
+            # No lock mechanism available (read-only .data). Proceed rather
+            # than silently never indexing — CodeGraph's own writer lock still
+            # serializes the actual writes underneath.
+            log.warning("codegraph: no cross-worker lock for %s (%s)", name, exc)
+            yield True
+        finally:
+            if fd is not None:
+                os.close(fd)
+
     async def _run_initial_index(self, index_root: str) -> None:
         """One-shot, fire-and-forget: build the index if it doesn't exist yet.
 
@@ -195,36 +242,60 @@ class CodeGraphAppPlugin:
         re-parse of the workspace for no gain. ``init -y`` is non-interactive
         by design.
 
-        Starting the bridge is sequenced AFTER this, not in parallel: a child
-        that opens a project with no index at all has nothing to answer from,
-        and the gateway's first ``tools/list`` would race the index build.
+        The MCP child is deliberately NOT started here. See
+        ``routes.py``'s ``/mcp`` handler: it is spawned lazily on the first
+        request that needs it, because every core worker runs this same
+        activate() and an eager start meant one ``codegraph serve --mcp``
+        child PER WORKER — measured on the first install: 12 children,
+        2.26 GB RSS and 12 independent file watchers over the same 80-repo
+        tree, against a manifest estimate of ~600 MB. CodeGraph's own daemon
+        election keeps the writes correct (its log says "Another daemon
+        already holds the lock; exiting"), so this was pure waste rather than
+        corruption — but it is waste proportional to the worker count.
         """
         try:
-            if not os.path.isdir(os.path.join(index_root, ".codegraph")):
-                async with self._index_lock:
-                    rc, detail = await self._run_codegraph("init", "-y", index_root)
-                self.last_index = {"ok": rc == 0, "at": time.time(), "detail": detail}
-                if rc != 0:
-                    log.warning("codegraph: initial index exited %s: %s", rc, detail)
-                else:
-                    log.info("codegraph: initial index of %s complete", index_root)
-            else:
+            if os.path.isdir(os.path.join(index_root, ".codegraph")):
                 self.last_index = {
                     "ok": True, "at": time.time(),
                     "detail": f"{index_root}/.codegraph already present — "
                               f"serve syncs it on start",
                 }
-            await self.bridge.start()
+                return
+            with self._single_worker("initial-index") as mine:
+                if not mine:
+                    self.last_index = {
+                        "ok": None, "at": time.time(),
+                        "detail": "another worker is building the initial index",
+                    }
+                    return
+                async with self._index_lock:
+                    rc, detail = await self._run_codegraph("init", "-y", index_root)
+            self.last_index = {"ok": rc == 0, "at": time.time(), "detail": detail}
+            if rc != 0:
+                log.warning("codegraph: initial index exited %s: %s", rc, detail)
+            else:
+                log.info("codegraph: initial index of %s complete", index_root)
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001 - a background task must not vanish silently
-            log.exception("codegraph: initial index / bridge start failed")
+            log.exception("codegraph: initial index failed")
             self.last_index = {"ok": False, "at": time.time(), "detail": str(exc)}
 
     async def _sync_tick(self) -> None:
         """The watchdog cadence body, registered ONLY when native_watch is
         off. ``sync`` (changes since the last index), never a full ``index``,
-        and niced so it never competes with interactive work."""
+        and niced so it never competes with interactive work.
+
+        Deliberately NOT guarded across workers, unlike the initial index.
+        ``ctx.watchdog`` tasks are already single-owner: core gates its
+        WatchdogSupervisor on a leader flock and genuinely ``pause()``es the
+        losers, so exactly one worker ever runs a registered task (see
+        ``src/apps/watchdog.py``'s "W1: leader mode" and ``Lock D`` in
+        ``src/api/app.py``). Adding a second gate here would be the cargo
+        cult this app avoided in dropping cgc's KuzuDB write-lock dance —
+        and worse, it would hide a regression in core's gate behind a
+        duplicate that silently covers for it.
+        """
         argv = [codegraph_shim_path(), "sync", self.index_root(), "--quiet"]
         if shutil.which("nice"):
             argv = ["nice", "-n", "19", *argv]

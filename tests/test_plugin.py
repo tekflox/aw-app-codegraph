@@ -9,10 +9,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sys
 from pathlib import Path
 
 import pytest
+from unittest.mock import MagicMock
 
 from codegraph_app import plugin as plugin_mod
 from codegraph_app.plugin import CodeGraphAppPlugin
@@ -39,6 +41,12 @@ def spawns(monkeypatch):
 
     monkeypatch.setattr(CodeGraphAppPlugin, "_spawn", fake_spawn)
     return calls
+
+
+async def _activate_and_index(plugin, ctx) -> None:
+    """activate() then await the one-shot initial-index task to completion."""
+    await plugin.activate(ctx)
+    await plugin._initial_index_task
 
 
 async def activate(ctx, *, start_bridge: bool = False) -> CodeGraphAppPlugin:
@@ -195,25 +203,40 @@ def test_mcp_tools_falls_back_to_the_default_list(make_ctx, spawns, tmp_path, co
 
 # ── indexing ──────────────────────────────────────────────────────────
 
-def test_initial_index_builds_the_index_when_none_exists(make_ctx, spawns, quiet_bridge,
-                                                         tmp_path, monkeypatch):
+def test_initial_index_builds_the_index_when_none_exists(make_ctx, spawns, tmp_path):
     ctx = make_ctx({"index_root": str(tmp_path)})
     plugin = CodeGraphAppPlugin()
 
     async def run():
         await plugin.activate(ctx)
-        plugin.bridge.args = [quiet_bridge]
         await plugin._initial_index_task
-        await plugin.bridge.stop()
 
     asyncio.run(run())
 
-    assert [sys.executable, "init", "-y", str(tmp_path)] in spawns
+    assert [plugin_mod.codegraph_shim_path(), "init", "-y", str(tmp_path)] in spawns
     assert plugin.last_index["ok"] is True
 
 
-def test_initial_index_skips_an_already_indexed_root(make_ctx, spawns, quiet_bridge,
-                                                     tmp_path):
+def test_the_initial_index_does_not_start_the_mcp_child(make_ctx, spawns, tmp_path):
+    """Every core worker runs this same activate(). Starting the child here
+    meant one `codegraph serve --mcp` per worker — measured on the first real
+    install: 12 children, 2.26 GB RSS and 12 file watchers over one 80-repo
+    tree, against a ~600 MB estimate. It is spawned lazily instead, by the
+    first MCP request that actually needs it."""
+    ctx = make_ctx({"index_root": str(tmp_path)})
+    plugin = CodeGraphAppPlugin()
+
+    async def run():
+        await plugin.activate(ctx)
+        await plugin._initial_index_task
+
+    asyncio.run(run())
+
+    assert plugin.bridge.spawn_count == 0
+    assert not plugin.bridge.running
+
+
+def test_initial_index_skips_an_already_indexed_root(make_ctx, spawns, tmp_path):
     """Re-indexing on every boot would re-parse the whole workspace for
     nothing — the serve child catches up on start."""
     (tmp_path / ".codegraph").mkdir()
@@ -222,9 +245,7 @@ def test_initial_index_skips_an_already_indexed_root(make_ctx, spawns, quiet_bri
 
     async def run():
         await plugin.activate(ctx)
-        plugin.bridge.args = [quiet_bridge]
         await plugin._initial_index_task
-        await plugin.bridge.stop()
 
     asyncio.run(run())
 
@@ -233,41 +254,17 @@ def test_initial_index_skips_an_already_indexed_root(make_ctx, spawns, quiet_bri
     assert "already present" in plugin.last_index["detail"]
 
 
-def test_a_failing_initial_index_is_recorded_not_raised(make_ctx, quiet_bridge,
-                                                        tmp_path, monkeypatch):
+def test_a_failing_initial_index_is_recorded_not_raised(make_ctx, tmp_path, monkeypatch):
     async def failing_spawn(self, argv):
         return 1, "could not open the project"
 
     monkeypatch.setattr(CodeGraphAppPlugin, "_spawn", failing_spawn)
-    ctx = make_ctx({"index_root": str(tmp_path)})
     plugin = CodeGraphAppPlugin()
 
-    async def run():
-        await plugin.activate(ctx)
-        plugin.bridge.args = [quiet_bridge]
-        await plugin._initial_index_task
-        await plugin.bridge.stop()
-
-    asyncio.run(run())
+    asyncio.run(_activate_and_index(plugin, make_ctx({"index_root": str(tmp_path)})))
 
     assert plugin.last_index["ok"] is False
     assert "could not open" in plugin.last_index["detail"]
-
-
-def test_a_bridge_that_cannot_start_does_not_kill_activate(make_ctx, spawns, tmp_path):
-    """The index still works and /status must still answer — a dead child is
-    reported, not raised out of a background task."""
-    ctx = make_ctx({"index_root": str(tmp_path)})
-    plugin = CodeGraphAppPlugin()
-
-    async def run():
-        await plugin.activate(ctx)
-        plugin.bridge.command = "/nonexistent/codegraph"
-        await plugin._initial_index_task
-
-    asyncio.run(run())
-
-    assert plugin.last_index["ok"] is False
 
 
 def test_reindex_runs_a_full_index_and_reasserts_the_project_config(
@@ -407,3 +404,139 @@ def test_deactivate_stops_the_child_and_cancels_the_index_task(make_ctx, spawns,
 
     assert not plugin.bridge.running
     assert plugin._initial_index_task.cancelled() or plugin._initial_index_task.done()
+
+
+def test_an_unexpected_failure_in_the_index_task_is_recorded_not_swallowed(
+        make_ctx, tmp_path, monkeypatch):
+    """A fire-and-forget task that dies silently is how an app comes to look
+    healthy with no index behind it."""
+    def exploding_lock(self, name):
+        raise RuntimeError("the filesystem went away")
+
+    monkeypatch.setattr(CodeGraphAppPlugin, "_single_worker", exploding_lock)
+    plugin = CodeGraphAppPlugin()
+
+    asyncio.run(_activate_and_index(plugin, make_ctx({"index_root": str(tmp_path)})))
+
+    assert plugin.last_index["ok"] is False
+    assert "filesystem went away" in plugin.last_index["detail"]
+
+
+def test_deactivate_cancels_an_initial_index_still_in_flight(make_ctx, tmp_path,
+                                                             monkeypatch):
+    """A full index takes minutes. An uninstall/reload mid-build must not
+    leave the task (and its subprocess) running against a half-removed app."""
+    started = asyncio.Event()
+
+    async def hanging_spawn(self, argv):
+        started.set()
+        await asyncio.sleep(3600)
+
+    monkeypatch.setattr(CodeGraphAppPlugin, "_spawn", hanging_spawn)
+    plugin = CodeGraphAppPlugin()
+
+    async def run():
+        await plugin.activate(make_ctx({"index_root": str(tmp_path)}))
+        await started.wait()
+        await plugin.deactivate()
+
+    asyncio.run(run())
+
+    assert plugin._initial_index_task.cancelled()
+    assert not plugin.bridge.running
+
+
+# ── cross-worker guards ──────────────────────────────────────────────
+
+def test_only_one_worker_builds_the_initial_index(make_ctx, tmp_path):
+    """The race this replaces was observed live on the first install: with a
+    plain isdir() guard, one worker saw .codegraph absent and ran init while
+    another saw the directory init had just created and reported "already
+    present"."""
+    ctx = make_ctx({"index_root": str(tmp_path)})
+    first, second = CodeGraphAppPlugin(), CodeGraphAppPlugin()
+    second_ctx = MagicMock()
+    second_ctx.package_dir = ctx.package_dir   # same app dir == same lock file
+    second_ctx.config = {"index_root": str(tmp_path)}
+
+    ran = []
+
+    async def slow_spawn(self, argv):
+        ran.append(argv)
+        await asyncio.sleep(0.2)   # hold the lock long enough to overlap
+        return 0, "ok"
+
+    async def run():
+        await first.activate(ctx)
+        await second.activate(second_ctx)
+        first._spawn = slow_spawn.__get__(first)
+        second._spawn = slow_spawn.__get__(second)
+        await asyncio.gather(first._initial_index_task, second._initial_index_task)
+
+    asyncio.run(run())
+
+    assert len(ran) == 1, f"expected exactly one init, got {len(ran)}"
+    assert len([p for p in (first, second) if p.last_index["ok"] is True]) == 1
+    deferred = [p for p in (first, second) if p.last_index["ok"] is None]
+    assert len(deferred) == 1
+    assert "another worker" in deferred[0].last_index["detail"]
+
+
+def test_the_lock_is_released_so_a_later_boot_can_retry(make_ctx, spawns, tmp_path):
+    """A flock, not a marker: a worker killed mid-index must not leave the
+    workspace permanently un-indexed. Nothing persistent is written, so a
+    fresh plugin on the same root indexes again."""
+    ctx = make_ctx({"index_root": str(tmp_path)})
+    asyncio.run(_activate_and_index(CodeGraphAppPlugin(), ctx))
+    assert len([a for a in spawns if "init" in a]) == 1
+
+    # No marker file left behind to block the retry.
+    assert not list(tmp_path.glob(".codegraph.aw-init"))
+
+    second = CodeGraphAppPlugin()
+    asyncio.run(_activate_and_index(second, make_ctx({"index_root": str(tmp_path)})))
+    assert len([a for a in spawns if "init" in a]) == 2
+
+
+def test_the_sync_tick_is_not_double_gated(make_ctx, spawns, tmp_path):
+    """ctx.watchdog tasks are already single-owner via core's watchdog leader
+    flock (src/apps/watchdog.py "W1: leader mode"), so every registered tick
+    must actually run — a second gate here would hide a regression in core's."""
+    plugin = asyncio.run(activate(make_ctx({"index_root": str(tmp_path),
+                                            "native_watch": False})))
+
+    asyncio.run(plugin._sync_tick())
+    asyncio.run(plugin._sync_tick())
+
+    assert len([a for a in spawns if "sync" in a]) == 2
+    assert plugin.last_sync["ok"] is True
+
+
+def test_an_unlockable_data_dir_still_indexes_rather_than_going_quiet(
+        make_ctx, spawns, tmp_path, monkeypatch):
+    """Losing the lock mechanism must not silently mean "never index" —
+    CodeGraph's own writer lock is still underneath."""
+    monkeypatch.setattr(plugin_mod.os, "makedirs",
+                        lambda *a, **k: (_ for _ in ()).throw(OSError("read-only")))
+    plugin = CodeGraphAppPlugin()
+
+    asyncio.run(_activate_and_index(plugin, make_ctx({"index_root": str(tmp_path)})))
+
+    assert any("init" in a for a in spawns)
+    assert plugin.last_index["ok"] is True
+
+
+def test_an_unwritable_index_root_records_the_failure_rather_than_raising(
+        make_ctx, tmp_path):
+    """The lock lives in this app's own .data, so an unwritable index_root no
+    longer costs the claim — `init` just fails, and that has to be reported
+    rather than escaping a background task."""
+    root = tmp_path / "ro"
+    root.mkdir()
+    root.chmod(0o500)
+    try:
+        plugin = CodeGraphAppPlugin()
+        asyncio.run(_activate_and_index(plugin, make_ctx({"index_root": str(root)})))
+        assert plugin.last_index["ok"] is False
+    finally:
+        root.chmod(0o700)

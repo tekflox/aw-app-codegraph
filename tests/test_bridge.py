@@ -471,3 +471,37 @@ async def test_a_child_that_greets_then_dies_before_tools_list_also_reports_clea
     with pytest.raises(RuntimeError, match="without completing its MCP handshake"):
         await br.start()
     assert not br.running
+
+
+@pytest.mark.asyncio
+async def test_the_child_is_spawned_lazily_by_the_first_request_that_needs_it():
+    """Every core worker activates the plugin, so eager-starting the child in
+    activate() meant one `codegraph serve --mcp` PER WORKER — measured on the
+    first real install: 12 children, 2.26 GB RSS, 12 file watchers over one
+    80-repo tree, against a ~600 MB manifest estimate. Lazily, only a worker
+    the gateway actually talks to pays for a child.
+
+    `initialize` must NOT spawn one: the gateway re-dials on every reload, and
+    answering that handshake on a worker that never sees a tool call would
+    bring the per-worker fan-out straight back.
+    """
+    br = make_bridge()
+    try:
+        assert br.spawn_count == 0
+
+        await br.handle_request({"jsonrpc": "2.0", "id": 1, "method": "initialize"})
+        await br.handle_request({"jsonrpc": "2.0", "method": "notifications/initialized"})
+        await br.handle_request({"jsonrpc": "2.0", "id": 2, "method": "ping"})
+        assert br.spawn_count == 0, "the handshake must not spawn a child"
+
+        resp = await br.handle_request({"jsonrpc": "2.0", "id": 3, "method": "tools/list"})
+        assert [t["name"] for t in resp["result"]["tools"]] == [
+            "codegraph_explore", "codegraph_status"]
+        assert br.spawn_count == 1
+
+        # And a second request reuses it rather than spawning another.
+        await br.handle_request({"jsonrpc": "2.0", "id": 4, "method": "tools/call",
+                                 "params": {"name": "codegraph_explore", "arguments": {}}})
+        assert br.spawn_count == 1
+    finally:
+        await br.stop()
