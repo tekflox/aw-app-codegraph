@@ -2,7 +2,7 @@
   "manifest_version": 1,
   "id": "codegraph",
   "name": "Code Graph",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Ask about this workspace's code and get the real answer, not a guess. Code Graph indexes every repo here into one searchable graph of symbols, call paths and files, then hands any agent on this tenant a `codegraph_explore` tool that returns the verbatim source of the symbols that matter plus who calls them \u2014 one call instead of a dozen greps. The index follows your edits as you make them, so the answer is never stale.",
   "tier": "inprocess",
   "category": "dev-tools",
