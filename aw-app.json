@@ -10,7 +10,7 @@
   "requires_ui_refresh": true,
   "resource_estimate": {
     "cpu": "low",
-    "memory": "~1.3 GB",
+    "memory": "~2 GB",
     "disk": "~550 MB"
   },
   "runtime": {
