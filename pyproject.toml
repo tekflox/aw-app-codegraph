@@ -13,9 +13,16 @@ asyncio_mode = "strict"
 #
 # Suppressed narrowly and deliberately: production never closes its loop (the
 # bridge's child lives for the life of the workspace process), so this cannot
-# mask a real defect. Do NOT widen this to all warnings.
+# mask a real defect.
+#
+# Do NOT add a blanket "error" entry here. Tried 2026-10-05 and reverted the
+# same hour: promoting every warning to an error makes this suite hostage to
+# any dependency's own deprecation notice, and starlette's
+# StarletteDeprecationWarning ("install httpx2 instead") fires at IMPORT time
+# on a newer starlette than the local one — so the whole of test_routes.py
+# failed to collect on CI while passing locally. A warning in somebody else's
+# library is not this app's test failing.
 filterwarnings = [
-    "error",
     "ignore::pytest.PytestUnraisableExceptionWarning",
 ]
 
