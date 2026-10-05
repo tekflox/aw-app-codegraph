@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -23,6 +24,14 @@ def make_bridge(**env) -> CodeGraphBridge:
 
 def text_of(response: dict) -> dict:
     return json.loads(response["result"]["content"][0]["text"])
+
+
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
 
 
 @pytest.mark.asyncio
@@ -343,11 +352,17 @@ async def test_a_child_that_ignores_sigterm_is_killed():
     br = make_bridge(FAKE_IGNORE_SIGTERM="1")
     try:
         await br.start()
-        proc = br.proc
-        # Keep the escalation quick — the real budget is 10s and the test
-        # only needs to prove the kill path runs.
+        pid = br.proc.pid
+        # The real budget is 10s; the test only needs the kill path to run.
         await asyncio.wait_for(br.stop(), timeout=30)
-        assert proc.returncode is not None
+        # Reading the pid rather than holding the Process object on purpose:
+        # a reference that outlives this coroutine keeps the subprocess
+        # transport alive past the event loop's own teardown, and its
+        # __del__ then raises "Event loop is closed" as an unraisable
+        # exception — which surfaces as a scary red annotation on an
+        # otherwise green CI run, attributed to whatever test happened to
+        # be running when the GC got to it.
+        assert not _pid_alive(pid)
     finally:
         if br.running:
             br.proc.kill()

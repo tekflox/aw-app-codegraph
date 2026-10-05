@@ -3,6 +3,21 @@
 # tests are async. asyncio_mode=auto would also work; the explicit marker
 # keeps it visible which tests own an event loop.
 asyncio_mode = "strict"
+# These tests spawn, kill and abandon REAL child processes on purpose (that is
+# the bridge's whole risk surface). pytest-asyncio closes a fresh event loop
+# per test, and any subprocess transport the interpreter only gets around to
+# collecting AFTER that raises "Event loop is closed" from its __del__ — an
+# UNRAISABLE exception, so it is reported against whichever test happened to
+# be running when the GC reached it, not the one that created it. Green run,
+# scary red annotation, misleading attribution.
+#
+# Suppressed narrowly and deliberately: production never closes its loop (the
+# bridge's child lives for the life of the workspace process), so this cannot
+# mask a real defect. Do NOT widen this to all warnings.
+filterwarnings = [
+    "error",
+    "ignore::pytest.PytestUnraisableExceptionWarning",
+]
 
 [tool.coverage.run]
 source = ["codegraph_app"]
