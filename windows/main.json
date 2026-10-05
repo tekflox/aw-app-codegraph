@@ -1,0 +1,42 @@
+{
+  "layout": "stack",
+  "regions": [
+    {
+      "id": "status",
+      "widgets": [
+        { "type": "markdown", "value": "## Code Graph" },
+        {
+          "type": "auth_status",
+          "bind": "GET /api/apps/codegraph/status",
+          "loading_text": "Reading the index…",
+          "logged_in_text": "Indexed **{files}** files · {nodes} symbols · {edges} edges · {db_size_mb} MB — rooted at `{index_root}`, last built {last_indexed}. {mcp_tool_count} tools live on aw-gateway as `aw__codegraph__*`.",
+          "error_text": "CodeGraph is installed but has no usable index at `{index_root}` yet — the first build runs in the background and takes a few minutes on a workspace this size. Detail: {status_error}",
+          "logged_out_text": "The codegraph CLI is not answering. Check `aw-workspace-cli doctor` — a system CLI that is present but broken is reported there and nowhere else."
+        }
+      ]
+    },
+    {
+      "id": "freshness",
+      "widgets": [
+        {
+          "type": "markdown",
+          "value": "### Freshness\nThe MCP server watches the indexed tree and folds edits in as they land, so queries track your work without a polling cycle. Turn `native_watch` off in settings only if the watcher ever costs too much — a periodic `codegraph sync` takes over at `reconcile_interval_s`.\n\nOne index covers the whole workspace: the root repo plus every nested repo under the paths in `include_ignored`. Each nested repo's own `.gitignore` is still respected."
+        }
+      ]
+    },
+    {
+      "id": "actions",
+      "widgets": [
+        {
+          "type": "markdown",
+          "value": "### Rebuild\nA full rebuild re-parses every file from scratch. You only need it after changing which paths are indexed, or if a query returns something the source clearly contradicts. Runs in the background."
+        },
+        {
+          "type": "button",
+          "label": "Rebuild the index",
+          "action": { "call": "POST /api/apps/codegraph/reindex" }
+        }
+      ]
+    }
+  ]
+}

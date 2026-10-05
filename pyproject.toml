@@ -1,0 +1,32 @@
+[tool.pytest.ini_options]
+# The bridge is tested against a real stdio child process, so most of its
+# tests are async. asyncio_mode=auto would also work; the explicit marker
+# keeps it visible which tests own an event loop.
+asyncio_mode = "strict"
+
+[tool.coverage.run]
+source = ["codegraph_app"]
+omit = ["*/__pycache__/*"]
+
+[tool.coverage.report]
+# Exemptions 1-4 from docs/standards/pipeline-testing.md §3 (glue, properties,
+# dunder reprs, pure re-exports) — the same set aw-app-template carries.
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "def __str__",
+    "if __name__ == .__main__",
+    "raise NotImplementedError",
+    "except ImportError",
+]
+show_missing = true
+precision = 1
+# A hard 100% gate, not the estate's 80% floor (docs/standards/
+# pipeline-testing.md §4.2). This app's whole risk surface is the MCP
+# bridge's process lifecycle — a child that dies mid-session, a second
+# handshake, two callers' ids crossing — and that is covered by tests driving
+# a REAL stdio child (tests/fake_mcp_child.py), not import-only stubs. It
+# measured 100% on adoption (2026-10-05), so the gate locks that in rather
+# than leaving slack it doesn't need. Ratchet only: never lower this without
+# a documented reason.
+fail_under = 100

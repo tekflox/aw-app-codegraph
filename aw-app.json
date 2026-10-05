@@ -1,0 +1,137 @@
+{
+  "manifest_version": 1,
+  "id": "codegraph",
+  "name": "Code Graph",
+  "version": "0.1.0",
+  "description": "Ask about this workspace's code and get the real answer, not a guess. Code Graph indexes every repo here into one searchable graph of symbols, call paths and files, then hands any agent on this tenant a `codegraph_explore` tool that returns the verbatim source of the symbols that matter plus who calls them — one call instead of a dozen greps. The index follows your edits as you make them, so the answer is never stale.",
+  "tier": "inprocess",
+  "category": "dev-tools",
+  "publisher": "TekFlox",
+  "requires_ui_refresh": true,
+  "resource_estimate": {
+    "cpu": "low",
+    "memory": "~600 MB",
+    "disk": "~350 MB"
+  },
+  "runtime": {
+    "python": ">=3.11",
+    "entrypoint": "codegraph_app.plugin:CodeGraphAppPlugin",
+    "pip_requires": []
+  },
+  "permissions": [
+    "commands:install",
+    "fs:workspace-data",
+    "routes:register",
+    "watchdog:tasks"
+  ],
+  "contributes": {
+    "system_clis": [
+      {
+        "name": "codegraph",
+        "installer": "scripts/install_codegraph.sh",
+        "version": "1.6.2",
+        "verify": "codegraph --version"
+      }
+    ],
+    "routes": [
+      {
+        "prefix": "/api/apps/codegraph"
+      }
+    ],
+    "windows": [
+      {
+        "id": "codegraph.main",
+        "title": "Code Graph",
+        "body": {
+          "type": "declarative",
+          "spec": "windows/main.json"
+        }
+      }
+    ],
+    "settings_panels": [
+      {
+        "id": "codegraph.settings",
+        "window": "codegraph.main"
+      }
+    ],
+    "mcp": {
+      "reload_on_save": false,
+      "provides": [
+        "codegraph_explore",
+        "codegraph_node",
+        "codegraph_search",
+        "codegraph_callers",
+        "codegraph_callees",
+        "codegraph_impact",
+        "codegraph_files",
+        "codegraph_status"
+      ]
+    },
+    "skills": [
+      {
+        "id": "aw-codegraph",
+        "path": "skills/aw-codegraph/SKILL.md",
+        "description": "What Code Graph indexes across the workspace's nested repos, which MCP tools it exposes and how the HTTP bridge gets them onto aw-gateway, how to force a reindex, and what to check when a query looks stale."
+      }
+    ]
+  },
+  "config_schema": {
+    "type": "object",
+    "properties": {
+      "index_root": {
+        "type": "string",
+        "default": "/opt/aw-workspace",
+        "description": "Root directory indexed by CodeGraph. One index covers the root repo and every nested repo named by include_ignored."
+      },
+      "include_ignored": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "default": [
+          "repos/"
+        ],
+        "description": "Gitignore-style patterns naming gitignored directories whose embedded git repos get indexed anyway, written to codegraph.json at index_root. The workspace's own .gitignore excludes /repos/, so without this the ~50 nested repos there are invisible to the index."
+      },
+      "native_watch": {
+        "type": "boolean",
+        "default": true,
+        "description": "Let the MCP server's own file watcher keep the index current in near-real-time. Turn it off to fall back to a periodic `codegraph sync` tick instead (see reconcile_interval_s) if the watcher ever costs too much CPU or runs into the host's inotify watch limit."
+      },
+      "reconcile_interval_s": {
+        "type": "number",
+        "default": 900,
+        "description": "How often (seconds) to run a low-priority `codegraph sync`. Only used when native_watch is off — with the watcher on, no polling tick is registered at all."
+      },
+      "mcp_tools": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "default": [
+          "explore",
+          "node",
+          "search",
+          "callers",
+          "callees",
+          "impact",
+          "files",
+          "status"
+        ],
+        "description": "Which CodeGraph MCP tools to expose. CodeGraph itself only lists `explore` by default; this allowlist re-enables the rest. Short names (`explore`) or long (`codegraph_explore`) both work."
+      }
+    },
+    "required": []
+  },
+  "dependencies": {
+    "apps": [
+      {
+        "id": "mcp-gateway",
+        "version": ">=0.1.0",
+        "required": true,
+        "reason": "This app's MCP tools reach agents as an HTTP upstream registered in its own mcp.json, which the MCP Gateway app discovers by scanning installed app folders."
+      }
+    ]
+  },
+  "migrations": {}
+}
