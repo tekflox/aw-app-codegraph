@@ -101,5 +101,3 @@ the gateway's app-scan only ever looks at `apps/<slug>/mcp.json`.
 
 The raw catalog can lag a merged sync PR by ~5 minutes (GitHub's raw CDN).
 Poll `GET /api/apps/-/catalog` rather than debugging the install path.
-
-<!-- fleet migration batch 1: follow-up no-op to prove the review/merge loop end-to-end -->
