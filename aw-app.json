@@ -73,7 +73,11 @@
         "path": "skills/aw-codegraph/SKILL.md",
         "description": "What Code Graph indexes across the workspace's nested repos, which MCP tools it exposes and how the HTTP bridge gets them onto aw-gateway, how to force a reindex, and what to check when a query looks stale."
       }
-    ]
+    ],
+    "agents_md": {
+      "path": "docs/AGENTS-block.md",
+      "title": "Code graph"
+    }
   },
   "config_schema": {
     "type": "object",
